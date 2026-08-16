@@ -42,6 +42,13 @@ class MediaTransientError(MediaProviderError):
 
 
 @dataclass(frozen=True)
+class ImageProviderCapabilities:
+    supports_reference_images: bool
+    max_reference_images: int
+    supports_image_editing: bool
+
+
+@dataclass(frozen=True)
 class GeneratedImage:
     provider: str
     model: str
@@ -73,6 +80,7 @@ class DownloadedStockMedia:
 class ImageProvider(Protocol):
     name: str
     model: str
+    capabilities: ImageProviderCapabilities
 
     def generate(
         self,

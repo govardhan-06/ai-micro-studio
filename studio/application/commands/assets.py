@@ -36,6 +36,58 @@ def _asset_uri(
     return storage.put(f"projects/{project_id}/scenes/{scene_id}/assets/{asset_id}{extension}", content)
 
 
+def _reference_asset_uri(
+    storage: LocalArtifactStorage,
+    *,
+    project_id: str,
+    asset_id: str,
+    content_type: str,
+    content: bytes,
+) -> str:
+    extension = mimetypes.guess_extension(content_type) or ".bin"
+    return storage.put(f"projects/{project_id}/references/{asset_id}{extension}", content)
+
+
+def persist_reference_image(
+    session: Session,
+    *,
+    project_id: str,
+    reference_key: str,
+    asset_type: str,
+    prompt: str,
+    result: GeneratedImage,
+    storage: LocalArtifactStorage,
+) -> Asset:
+    asset_id = new_id()
+    metadata = {
+        **dict(result.metadata),
+        "reference_key": reference_key,
+        "content_type": result.content_type,
+        "provenance": {"provider": result.provider, "model": result.model},
+    }
+    asset = Asset(
+        id=asset_id,
+        project_id=project_id,
+        scene_id=None,
+        asset_type=asset_type,
+        provider=result.provider,
+        model=result.model,
+        local_uri=_reference_asset_uri(
+            storage,
+            project_id=project_id,
+            asset_id=asset_id,
+            content_type=result.content_type,
+            content=result.content,
+        ),
+        prompt=prompt,
+        metadata_json=metadata,
+        status="available",
+    )
+    session.add(asset)
+    session.flush()
+    return asset
+
+
 def persist_generated_image(
     session: Session,
     *,
@@ -43,10 +95,13 @@ def persist_generated_image(
     prompt: str,
     result: GeneratedImage,
     storage: LocalArtifactStorage,
+    metadata_extra: dict | None = None,
+    status: str = "available",
 ) -> Asset:
     scene = _scene(session, scene_id)
     asset_id = new_id()
     metadata = dict(result.metadata)
+    metadata.update(metadata_extra or {})
     metadata.update({"content_type": result.content_type, "provenance": {"provider": result.provider, "model": result.model}})
     asset = Asset(
         id=asset_id,
@@ -58,7 +113,7 @@ def persist_generated_image(
         local_uri=_asset_uri(storage, project_id=scene.project_id, scene_id=scene.id, asset_id=asset_id, content_type=result.content_type, content=result.content),
         prompt=prompt,
         metadata_json=metadata,
-        status="available",
+        status=status,
     )
     session.add(asset)
     session.flush()
@@ -119,3 +174,13 @@ def list_scene_assets(session: Session, *, scene_id: str) -> tuple[list[Asset], 
 def select_scene_asset(session: Session, *, scene_id: str, asset_id: str) -> AssetSelection:
     _scene(session, scene_id)
     return select_asset(session, scene_id=scene_id, asset_id=asset_id)
+
+
+def list_reference_assets(session: Session, *, project_id: str) -> list[Asset]:
+    return list(
+        session.scalars(
+            select(Asset)
+            .where(Asset.project_id == project_id, Asset.scene_id.is_(None))
+            .order_by(Asset.created_at.asc())
+        )
+    )

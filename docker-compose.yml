@@ -17,13 +17,15 @@ x-app-environment: &app-environment
   CLOUDFLARE_API_KEY: ${CLOUDFLARE_API_KEY:-}
   CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
   CLOUDFLARE_BASE_URL: ${CLOUDFLARE_BASE_URL:-https://api.cloudflare.com/client/v4}
+  CLOUDFLARE_IMAGE_MODEL: ${CLOUDFLARE_IMAGE_MODEL:-@cf/black-forest-labs/flux-2-klein-4b}
+  CLOUDFLARE_WHISPER_MODEL: ${CLOUDFLARE_WHISPER_MODEL:-@cf/openai/whisper-large-v3-turbo}
   PEXELS_API_KEY: ${PEXELS_API_KEY:-}
   GEMINI_API_KEY: ${GEMINI_API_KEY:-}
   GEMINI_PROJECT_ID: ${GEMINI_PROJECT_ID:-}
-  IMAGE_PRIMARY: ${IMAGE_PRIMARY:-cloudflare_flux_schnell}
+  IMAGE_PRIMARY: ${IMAGE_PRIMARY:-cloudflare_flux_klein}
   STOCK_PRIMARY: ${STOCK_PRIMARY:-pexels}
   TTS_PRIMARY: ${TTS_PRIMARY:-gemini_tts}
-  TRANSCRIPTION_PRIMARY: ${TRANSCRIPTION_PRIMARY:-groq_whisper}
+  TRANSCRIPTION_PRIMARY: ${TRANSCRIPTION_PRIMARY:-cloudflare_whisper}
   VIDEO_GENERATION_ENABLED: ${VIDEO_GENERATION_ENABLED:-false}
   ARTIFACT_STORAGE: ${ARTIFACT_STORAGE:-local}
   ARTIFACT_ROOT: ${ARTIFACT_ROOT:-/var/lib/ai-micro-story-studio/artifacts}
@@ -96,6 +98,7 @@ services:
           path: ./services/api/Dockerfile
 
   worker:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: services/worker/Dockerfile

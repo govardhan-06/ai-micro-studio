@@ -18,6 +18,16 @@ type Caption = {
   end_sec: number;
 };
 
+type TextOverlay = {
+  text: string;
+  x: number;
+  y: number;
+  font_size: number;
+  color: string;
+  start_sec: number;
+  end_sec: number | null;
+};
+
 type Scene = {
   id: string;
   order: number;
@@ -28,6 +38,7 @@ type Scene = {
   asset_path: string;
   asset_kind: "image" | "video";
   sfx: string[];
+  text_overlay: TextOverlay | null;
 };
 
 type RenderManifest = {
@@ -106,6 +117,30 @@ function SceneLayer({ scene }: { scene: Scene }) {
   );
 }
 
+function TextOverlayLayer({ overlay }: { overlay: TextOverlay }) {
+  const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
+  const seconds = frame / fps;
+  if (seconds < overlay.start_sec || (overlay.end_sec !== null && seconds >= overlay.end_sec)) return null;
+  return (
+    <div
+      style={{
+        color: overlay.color,
+        fontFamily: "Arial, sans-serif",
+        fontSize: overlay.font_size,
+        fontWeight: 700,
+        left: `${overlay.x * 100}%`,
+        position: "absolute",
+        top: `${overlay.y * 100}%`,
+        transform: "translate(-50%, -50%)",
+        whiteSpace: "pre-wrap",
+      }}
+    >
+      {overlay.text}
+    </div>
+  );
+}
+
 function CaptionOverlay({ captions }: { captions: Caption[] }) {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -162,6 +197,7 @@ function StoryVideo(manifest: RenderManifest) {
       <Sequence key={scene.id} from={from} durationInFrames={scene.duration_in_frames}>
         <AbsoluteFill style={{ backgroundColor: "#101522" }}>
           <SceneLayer scene={scene} />
+          {scene.text_overlay ? <TextOverlayLayer overlay={scene.text_overlay} /> : null}
         </AbsoluteFill>
       </Sequence>
     );

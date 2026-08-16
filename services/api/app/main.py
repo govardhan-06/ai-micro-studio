@@ -18,6 +18,7 @@ from studio.application.commands.creative import (
 )
 from studio.application.commands.assets import (
     AssetRecordNotFoundError,
+    list_reference_assets,
     list_scene_assets,
     select_scene_asset,
 )
@@ -52,6 +53,7 @@ from studio.application.commands.visuals import (
     approve_visual_bible,
     generate_storyboard,
     generate_visual_bible,
+    missing_reference_assets,
     revise_scene,
     revise_visual_bible,
 )
@@ -104,6 +106,7 @@ from studio.application.workflows.dispatch import (
     retry_and_enqueue_generation_job,
 )
 from studio.application.workflows.progress import project_event_stream
+from studio.domain.schemas.contracts import ShotSpec, normalize_visual_bible
 from studio.domain.services.transitions import InvalidTransitionError
 from studio.persistence.database import create_session_factory, session_scope
 from studio.persistence.models import (
@@ -116,6 +119,7 @@ from studio.persistence.models import (
     Render,
     Scene,
     StoryVersion,
+    VisualBibleVersion,
 )
 from studio.rendering.manifest import RenderValidationError
 from studio.storage.local import create_artifact_storage
@@ -212,14 +216,16 @@ def _story_response(story) -> StoryVersionResponse:
     )
 
 
-def _visual_bible_response(visual_bible) -> VisualBibleResponse:
-    from studio.domain.schemas.contracts import VisualBible
-
+def _visual_bible_response(visual_bible, session: Session | None = None) -> VisualBibleResponse:
     return VisualBibleResponse(
         id=visual_bible.id,
         project_id=visual_bible.project_id,
         version=visual_bible.version,
-        visual_bible=VisualBible.model_validate(visual_bible.payload),
+        visual_bible=normalize_visual_bible(visual_bible.payload),
+        reference_assets=[
+            _asset_response(asset).model_dump(mode="json")
+            for asset in (list_reference_assets(session, project_id=visual_bible.project_id) if session else [])
+        ],
         approval_status=visual_bible.approval_status,
         approved_at=visual_bible.approved_at,
         created_at=visual_bible.created_at,
@@ -259,6 +265,7 @@ def _scene_response(scene, assets: list[Asset] | None = None, selection=None) ->
         motion=scene.motion,
         caption_emphasis=scene.caption_emphasis,
         sfx=scene.sfx,
+        shot_spec=ShotSpec.model_validate(scene.shot_spec_json) if scene.shot_spec_json else None,
         assets=[_asset_response(asset) for asset in assets or []],
         selected_asset_id=selection.selected_asset_id if selection else None,
         created_at=scene.created_at,
@@ -384,7 +391,7 @@ def get_workspace_route(project_id: str, session: Session = Depends(get_session)
         project=ProjectResponse.model_validate(project),
         ideas=[_idea_response(idea) for idea in list_ideas(session, project_id=project_id)],
         stories=[_story_response(story) for story in list_stories(session, project_id=project_id)],
-        visual_bibles=[_visual_bible_response(bible) for bible in list_visual_bibles(session, project_id=project_id)],
+        visual_bibles=[_visual_bible_response(bible, session) for bible in list_visual_bibles(session, project_id=project_id)],
         scenes=[
             _scene_response(scene, *list_scene_assets(session, scene_id=scene.id))
             for scene in list_scenes(session, project_id=project_id)
@@ -548,8 +555,8 @@ def generate_visual_bible_route(
             project_id=project_id,
             job_type="visual_bible_generation",
             request={"run_key": payload.run_key},
-            provider="deterministic",
-            model="visual-bible-v1",
+            provider=os.getenv("LLM_PRIMARY", "nvidia_nim"),
+            model=os.getenv("NIM_MODEL") or os.getenv("GROQ_MODEL"),
             max_attempts=3,
         )
     except ProjectNotFoundError:
@@ -567,7 +574,8 @@ def revise_visual_bible_route(
 ) -> VisualBibleResponse:
     try:
         return _visual_bible_response(
-            revise_visual_bible(session, project_id=project_id, visual_bible=payload.visual_bible)
+            revise_visual_bible(session, project_id=project_id, visual_bible=payload.visual_bible),
+            session,
         )
     except VisualRecordNotFoundError as exc:
         raise _not_found(str(exc)) from None
@@ -588,12 +596,41 @@ def approve_visual_bible_route(
                 session,
                 project_id=project_id,
                 visual_bible_version_id=visual_bible_version_id,
-            )
+            ), session
         )
     except VisualRecordNotFoundError as exc:
         raise _not_found(str(exc)) from None
     except InvalidTransitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from None
+
+
+@app.post(
+    "/api/v1/projects/{project_id}/visual-bible/references:generate",
+    response_model=GenerationJobSubmissionResponse,
+    status_code=202,
+)
+def generate_visual_references_route(
+    project_id: str,
+    payload: VisualBibleGenerationRequest,
+    session: Session = Depends(get_session),
+    dispatcher=Depends(get_dispatcher),
+) -> GenerationJobSubmissionResponse:
+    try:
+        job, created, dispatched = enqueue_generation_job(
+            session,
+            dispatcher,
+            project_id=project_id,
+            job_type="visual_reference_generation",
+            request={"run_key": payload.run_key},
+            provider="cloudflare",
+            model=os.getenv("CLOUDFLARE_IMAGE_MODEL", "@cf/black-forest-labs/flux-2-klein-4b"),
+            max_attempts=3,
+        )
+    except ProjectNotFoundError:
+        raise _not_found(f"project {project_id} not found") from None
+    except JobDispatchError as exc:
+        raise HTTPException(status_code=503, detail={"message": str(exc), "job_id": exc.job_id}) from exc
+    return GenerationJobSubmissionResponse(job=_job_response(job), created=created, dispatched=dispatched)
 
 
 @app.post(
@@ -607,6 +644,20 @@ def generate_storyboard_route(
     session: Session = Depends(get_session),
     dispatcher=Depends(get_dispatcher),
 ) -> GenerationJobSubmissionResponse:
+    approved_bible = session.scalar(
+        select(VisualBibleVersion)
+        .where(
+            VisualBibleVersion.project_id == project_id,
+            VisualBibleVersion.approval_status == "approved",
+        )
+        .order_by(VisualBibleVersion.version.desc())
+    )
+    if approved_bible is None:
+        raise HTTPException(status_code=409, detail="an approved Visual Bible is required before storyboard generation")
+    if missing_reference_assets(
+        session, project_id=project_id, bible=normalize_visual_bible(approved_bible.payload)
+    ):
+        raise HTTPException(status_code=409, detail="generate canonical character and location references before storyboard generation")
     try:
         job, created, dispatched = enqueue_generation_job(
             session,
@@ -614,8 +665,8 @@ def generate_storyboard_route(
             project_id=project_id,
             job_type="storyboard_generation",
             request={"run_key": payload.run_key},
-            provider="deterministic",
-            model="storyboard-v1",
+            provider=os.getenv("LLM_PRIMARY", "nvidia_nim"),
+            model=os.getenv("NIM_MODEL") or os.getenv("GROQ_MODEL"),
             max_attempts=3,
         )
     except ProjectNotFoundError:
@@ -639,6 +690,7 @@ def revise_scene_route(
                 duration_sec=payload.duration_sec,
                 visual_prompt=payload.visual_prompt,
                 asset_strategy=payload.asset_strategy,
+                shot_spec=payload.shot_spec,
             )
         )
     except VisualRecordNotFoundError as exc:
@@ -668,6 +720,7 @@ def generate_narration_route(
     if get_project(session, project_id=project_id) is None:
         raise _not_found(f"project {project_id} not found")
     text = payload.text
+    target_duration_sec = None
     if text is None:
         story = session.scalar(
             select(StoryVersion)
@@ -680,6 +733,8 @@ def generate_narration_route(
         if story is None or not story.payload.get("narration"):
             raise HTTPException(status_code=422, detail="an approved StorySpec with narration is required")
         text = story.payload["narration"]
+        if isinstance(story.payload.get("target_duration_sec"), (int, float)):
+            target_duration_sec = story.payload["target_duration_sec"]
     try:
         job, created, dispatched = enqueue_generation_job(
             session,
@@ -691,6 +746,7 @@ def generate_narration_route(
                 "text": text,
                 "voice": payload.voice,
                 "direction": payload.direction,
+                "target_duration_sec": target_duration_sec,
             },
             provider="gemini_tts",
             model=os.getenv("GEMINI_TTS_MODEL", "gemini-3.1-flash-tts-preview"),
@@ -727,8 +783,8 @@ def align_captions_route(
                 "narration_version_id": narration.id,
                 "language": payload.language,
             },
-            provider="groq_whisper",
-            model=os.getenv("GROQ_WHISPER_MODEL", "whisper-large-v3-turbo"),
+            provider="cloudflare_whisper",
+            model=os.getenv("CLOUDFLARE_WHISPER_MODEL", "@cf/openai/whisper-large-v3-turbo"),
             max_attempts=3,
         )
     except JobDispatchError as exc:
@@ -1014,6 +1070,18 @@ def generate_scene_asset_route(
     scene = session.get(Scene, scene_id)
     if scene is None:
         raise _not_found(f"scene {scene_id} not found")
+    approved_bible = session.scalar(
+        select(VisualBibleVersion)
+        .where(
+            VisualBibleVersion.project_id == scene.project_id,
+            VisualBibleVersion.approval_status == "approved",
+        )
+        .order_by(VisualBibleVersion.version.desc())
+    )
+    if approved_bible is None:
+        raise HTTPException(status_code=409, detail="an approved Visual Bible is required before scene generation")
+    if missing_reference_assets(session, project_id=scene.project_id, bible=normalize_visual_bible(approved_bible.payload)):
+        raise HTTPException(status_code=409, detail="generate canonical character and location references before scene generation")
     try:
         job, created, dispatched = enqueue_generation_job(
             session,
@@ -1021,9 +1089,9 @@ def generate_scene_asset_route(
             project_id=scene.project_id,
             job_type="scene_asset_generation",
             version=scene.id,
-            request={"scene_id": scene.id, **payload.model_dump(mode="json")},
+            request={"scene_id": scene.id, "prompt_override": payload.prompt},
             provider="cloudflare",
-            model="@cf/black-forest-labs/flux-1-schnell",
+            model=os.getenv("CLOUDFLARE_IMAGE_MODEL", "@cf/black-forest-labs/flux-2-klein-4b"),
             max_attempts=3,
         )
     except ProjectNotFoundError:

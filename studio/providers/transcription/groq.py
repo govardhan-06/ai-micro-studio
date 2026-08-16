@@ -90,6 +90,7 @@ class GroqWhisperProvider(TranscriptionProvider):
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": f"multipart/form-data; boundary={boundary}",
+                "Accept": "application/json",
             },
             method="POST",
         )
@@ -128,18 +129,38 @@ class GroqWhisperProvider(TranscriptionProvider):
 
     def _payload_or_error(self, status: int, headers: Mapping[str, str], raw: bytes) -> dict:
         try:
-            payload = json.loads(raw.decode("utf-8"))
+            payload = json.loads(raw.decode("utf-8-sig"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise AudioTransientError(
+            if status >= 400:
+                content_type = headers.get("Content-Type", headers.get("content-type", "unknown"))
+                raise _groq_error(
+                    status,
+                    f"Groq Whisper returned a non-JSON error response (content type: {content_type})",
+                ) from exc
+            raise AudioProviderResponseError(
                 "Groq Whisper returned a non-JSON response",
                 code="audio_invalid_response",
                 provider=self.name,
-                retryable=status >= 500,
                 status_code=status,
             ) from exc
+        if not isinstance(payload, Mapping):
+            raise AudioProviderResponseError(
+                "Groq Whisper returned a non-object JSON response",
+                code="audio_invalid_response",
+                provider=self.name,
+                status_code=status,
+            )
         if status >= 400:
-            raise _groq_error(status, str((payload.get("error") or {}).get("message") or "Groq Whisper request failed"))
-        return payload
+            error = payload.get("error")
+            message = (
+                str(error.get("message"))
+                if isinstance(error, Mapping) and error.get("message")
+                else str(error)
+                if isinstance(error, str) and error
+                else "Groq Whisper request failed"
+            )
+            raise _groq_error(status, message)
+        return dict(payload)
 
 
 def _multipart_body(
@@ -173,8 +194,20 @@ def _multipart_body(
 
 
 def _groq_error(status: int, message: str) -> AudioProviderError:
-    if status in {401, 403}:
-        return AudioAuthenticationError(message, code="audio_authentication", provider="groq_whisper", status_code=status)
+    if status == 401:
+        return AudioAuthenticationError(
+            f"{message} (HTTP {status})",
+            code="audio_authentication",
+            provider="groq_whisper",
+            status_code=status,
+        )
+    if status == 403:
+        return AudioProviderError(
+            f"{message} (HTTP {status})",
+            code="audio_forbidden",
+            provider="groq_whisper",
+            status_code=status,
+        )
     if status == 429:
         return AudioRateLimitError(message, code="audio_rate_limited", provider="groq_whisper", retryable=True, status_code=status)
     if 400 <= status < 500:

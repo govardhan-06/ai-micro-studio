@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from math import ceil
 from pathlib import Path
 from typing import Literal
 
@@ -7,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from studio.domain.schemas.contracts import StorySpec
+from studio.domain.schemas.contracts import ShotSpec, StorySpec, TextOverlay
 from studio.persistence.models import (
     Asset,
     AssetSelection,
@@ -55,6 +56,7 @@ class RenderScene(RenderContract):
     asset_path: str = Field(min_length=1)
     asset_kind: Literal["image", "video"]
     sfx: list[str] = Field(default_factory=list)
+    text_overlay: TextOverlay | None = None
 
 
 class RenderManifest(RenderContract):
@@ -126,8 +128,13 @@ def build_render_manifest(
     for scene in scenes:
         selection = session.get(AssetSelection, scene.id)
         asset = session.get(Asset, selection.selected_asset_id) if selection else None
-        if asset is None or asset.scene_id != scene.id or asset.status != "available":
-            raise RenderValidationError(f"scene {scene.scene_order} needs a selected available asset")
+        qa_rejected = asset is not None and (
+            asset.status == "qa_rejected" or asset.metadata_json.get("qa", {}).get("passed") is False
+        )
+        if asset is None or asset.scene_id != scene.id or (asset.status != "available" and not qa_rejected):
+            raise RenderValidationError(
+                f"scene {scene.scene_order} needs a selected available asset or an explicitly selected QA-rejected asset"
+            )
         asset_path = _artifact_path(storage, asset.local_uri, f"scene {scene.scene_order} asset")
         frame_count = max(1, round(scene.duration_sec * RENDER_FPS))
         render_scenes.append(
@@ -141,6 +148,11 @@ def build_render_manifest(
                 asset_path=str(asset_path),
                 asset_kind=_asset_kind(asset.asset_type),
                 sfx=scene.sfx,
+                text_overlay=(
+                    ShotSpec.model_validate(scene.shot_spec_json).text_overlay
+                    if scene.shot_spec_json
+                    else None
+                ),
             )
         )
 
@@ -164,6 +176,7 @@ def build_render_manifest(
             allowed_types=("sfx", "audio", "sound_effect"),
         ))
     }
+    _fit_scene_timeline_to_narration(render_scenes, narration.duration_sec)
     duration_in_frames = sum(scene.duration_in_frames for scene in render_scenes)
     return RenderManifest(
         project_id=render.project_id,
@@ -178,6 +191,25 @@ def build_render_manifest(
         music_path=optional_music,
         sfx_paths=optional_sfx,
     )
+
+
+def _fit_scene_timeline_to_narration(scenes: list[RenderScene], narration_duration_sec: float) -> None:
+    target_frames = max(1, ceil(narration_duration_sec * RENDER_FPS))
+    current_frames = sum(scene.duration_in_frames for scene in scenes)
+    if current_frames > target_frames:
+        remaining = current_frames - target_frames
+        for scene in reversed(scenes):
+            trim = min(remaining, scene.duration_in_frames - 1)
+            scene.duration_in_frames -= trim
+            scene.duration_sec = scene.duration_in_frames / RENDER_FPS
+            remaining -= trim
+            if remaining == 0:
+                break
+        if remaining:
+            raise RenderValidationError("narration is shorter than the minimum scene timeline")
+    elif current_frames < target_frames:
+        scenes[-1].duration_in_frames += target_frames - current_frames
+        scenes[-1].duration_sec = scenes[-1].duration_in_frames / RENDER_FPS
 
 
 def _artifact_path(storage: LocalArtifactStorage, uri: str, label: str) -> Path:

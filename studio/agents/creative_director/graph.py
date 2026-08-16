@@ -13,15 +13,22 @@ from pydantic import BaseModel
 from studio.agents.creative_director.contracts import (
     CreativePackage,
     IdeaBatchOutput,
+    ShotSpecBatchOutput,
     StoryCritiqueOutput,
     StoryDraftOutput,
+    VisualBibleOutput,
 )
-from studio.domain.schemas.contracts import IdeaCandidate
+from studio.domain.schemas.contracts import IdeaCandidate, StorySpec, ShotSpec, VisualBible
 from studio.providers.llm.openai_compatible import OpenAICompatibleLLMProvider
 
 
 OutputT = TypeVar("OutputT", bound=BaseModel)
-CreativeMode = Literal["creative_package", "story_generation"]
+CreativeMode = Literal[
+    "creative_package",
+    "story_generation",
+    "visual_bible_generation",
+    "shot_spec_generation",
+]
 
 
 class ProviderAttempt(TypedDict, total=False):
@@ -40,6 +47,9 @@ class CreativeGraphState(TypedDict, total=False):
     idea_batch: IdeaBatchOutput | None
     candidates: list[IdeaCandidate]
     selected_idea: IdeaCandidate | None
+    story_spec: StorySpec | None
+    visual_bible: VisualBible | None
+    shot_specs: list[ShotSpec] | None
     draft: StoryDraftOutput | None
     critique: StoryCritiqueOutput | None
     revision_count: int
@@ -204,11 +214,31 @@ def build_creative_graph(
             providers,
             name="story-critic",
         ),
+        "visual_bible_writer": LangGraphStage.from_providers(
+            VisualBibleOutput,
+            "Return only a canonical Visual Bible. Specify explicit global lighting, lens language, render style, and aspect ratio; canonical character identity fields; and physical location geometry, time, weather, lighting, persistent props, and immutable traits. Reuse one location ID whenever shots occupy the same physical place.",
+            providers,
+            name="visual-bible-writer",
+        ),
+        "shot_spec_writer": LangGraphStage.from_providers(
+            ShotSpecBatchOutput,
+            "Return one validated ShotSpec per StorySpec scene. Use only approved Visual Bible identities and location IDs. Keep temporary props moment-specific, preserve continuity sources, and request readable text only when the story explicitly needs it.",
+            providers,
+            name="shot-spec-writer",
+        ),
     }
 
     def route_mode(state: CreativeGraphState) -> dict[str, Any]:
-        if state.get("mode") not in {"creative_package", "story_generation"}:
-            raise ValueError("creative graph mode must be creative_package or story_generation")
+        if state.get("mode") not in {
+            "creative_package",
+            "story_generation",
+            "visual_bible_generation",
+            "shot_spec_generation",
+        }:
+            raise ValueError(
+                "creative graph mode must be creative_package, story_generation, "
+                "visual_bible_generation, or shot_spec_generation"
+            )
         return {}
 
     def idea_explorer(state: CreativeGraphState, config: RunnableConfig) -> dict[str, Any]:
@@ -288,6 +318,35 @@ def build_creative_graph(
             "provider_attempts": [*state.get("provider_attempts", []), *attempts],
         }
 
+    def visual_bible_writer(state: CreativeGraphState, config: RunnableConfig) -> dict[str, Any]:
+        story = state.get("story_spec")
+        if story is None:
+            raise ValueError("visual bible writer requires an approved StorySpec")
+        output, attempts = stages["visual_bible_writer"].invoke_with_attempts(
+            f"Approved StorySpec:\n{story.model_dump_json()}",
+            config=config,
+            metadata={**state.get("trace_metadata", {}), "run_id": state["run_id"]},
+        )
+        return {
+            "visual_bible": output.visual_bible,
+            "provider_attempts": [*state.get("provider_attempts", []), *attempts],
+        }
+
+    def shot_spec_writer(state: CreativeGraphState, config: RunnableConfig) -> dict[str, Any]:
+        story = state.get("story_spec")
+        bible = state.get("visual_bible")
+        if story is None or bible is None:
+            raise ValueError("shot spec writer requires an approved StorySpec and Visual Bible")
+        output, attempts = stages["shot_spec_writer"].invoke_with_attempts(
+            f"Approved StorySpec:\n{story.model_dump_json()}\nApproved Visual Bible:\n{bible.model_dump_json()}",
+            config=config,
+            metadata={**state.get("trace_metadata", {}), "run_id": state["run_id"]},
+        )
+        return {
+            "shot_specs": output.shot_specs,
+            "provider_attempts": [*state.get("provider_attempts", []), *attempts],
+        }
+
     def revise_or_finish(state: CreativeGraphState) -> str:
         critique = state.get("critique")
         if critique is None:
@@ -326,20 +385,41 @@ def build_creative_graph(
             raise ValueError("story result requires a draft and critique")
         return {"result": (draft, critique)}
 
+    def visual_bible_result(state: CreativeGraphState) -> dict[str, Any]:
+        bible = state.get("visual_bible")
+        if bible is None:
+            raise ValueError("visual bible result requires a Visual Bible")
+        return {"result": bible}
+
+    def shot_spec_result(state: CreativeGraphState) -> dict[str, Any]:
+        specs = state.get("shot_specs")
+        if not specs:
+            raise ValueError("shot spec result requires ShotSpecs")
+        return {"result": specs}
+
     builder = StateGraph(CreativeGraphState)
     builder.add_node("route_mode", route_mode)
     builder.add_node("idea_explorer", idea_explorer)
     builder.add_node("select_candidate", select_candidate)
     builder.add_node("story_writer", story_writer)
     builder.add_node("story_critic", story_critic)
+    builder.add_node("visual_bible_writer", visual_bible_writer)
+    builder.add_node("shot_spec_writer", shot_spec_writer)
     builder.add_node("revise_or_finish", lambda state: {})
     builder.add_node("package_result", package_result)
     builder.add_node("story_result", story_result)
+    builder.add_node("visual_bible_result", visual_bible_result)
+    builder.add_node("shot_spec_result", shot_spec_result)
     builder.add_edge(START, "route_mode")
     builder.add_conditional_edges(
         "route_mode",
         lambda state: state["mode"],
-        {"creative_package": "idea_explorer", "story_generation": "story_writer"},
+        {
+            "creative_package": "idea_explorer",
+            "story_generation": "story_writer",
+            "visual_bible_generation": "visual_bible_writer",
+            "shot_spec_generation": "shot_spec_writer",
+        },
     )
     builder.add_edge("idea_explorer", "select_candidate")
     builder.add_edge("select_candidate", "story_writer")
@@ -352,4 +432,8 @@ def build_creative_graph(
     )
     builder.add_edge("package_result", END)
     builder.add_edge("story_result", END)
+    builder.add_edge("visual_bible_writer", "visual_bible_result")
+    builder.add_edge("visual_bible_result", END)
+    builder.add_edge("shot_spec_writer", "shot_spec_result")
+    builder.add_edge("shot_spec_result", END)
     return builder.compile()

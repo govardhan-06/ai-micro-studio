@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from studio.domain.schemas.contracts import Contract, IdeaCandidate, IdeaScores, StorySpec
+from studio.domain.schemas.contracts import Contract, IdeaCandidate, IdeaScores, ShotSpec, StorySpec, VisualBible
 
 
 class IdeaCandidateOutput(Contract):
@@ -43,6 +43,14 @@ class StoryCritiqueOutput(Contract):
     issues: list[str] = Field(default_factory=list)
     scores: CritiqueScores
     recommendation: Literal["accept", "revise"]
+
+
+class ShotSpecBatchOutput(Contract):
+    shot_specs: list[ShotSpec] = Field(min_length=1)
+
+
+class VisualBibleOutput(Contract):
+    visual_bible: VisualBible
 
 
 class CreativePackage(Contract):

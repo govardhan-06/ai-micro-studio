@@ -95,7 +95,8 @@ class Scene(Timestamps, Base):
     strategy: Mapped[str] = mapped_column(String(64), nullable=False)
     visual_intent: Mapped[str | None] = mapped_column(Text)
     visual_prompt: Mapped[str | None] = mapped_column(Text)
-    motion: Mapped[str | None] = mapped_column(String(64))
+    shot_spec_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    motion: Mapped[str | None] = mapped_column(Text)
     caption_emphasis: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     sfx: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
 

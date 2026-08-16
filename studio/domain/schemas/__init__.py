@@ -1,3 +1,19 @@
-from .contracts import GenerationJobContract, StorySpec, VisualBible
+from .contracts import (
+    GenerationJobContract,
+    ReadableTextMetadata,
+    ShotSpec,
+    StorySpec,
+    TextOverlay,
+    VisualBible,
+    normalize_visual_bible,
+)
 
-__all__ = ["GenerationJobContract", "StorySpec", "VisualBible"]
+__all__ = [
+    "GenerationJobContract",
+    "ReadableTextMetadata",
+    "ShotSpec",
+    "StorySpec",
+    "TextOverlay",
+    "VisualBible",
+    "normalize_visual_bible",
+]

@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from studio.domain.constants import JobStatus
-from studio.domain.schemas.contracts import IdeaScores, StorySpec, VisualBible
+from studio.domain.schemas.contracts import IdeaScores, ShotSpec, StorySpec, VisualBible
 
 
 class APIContract(BaseModel):
@@ -133,6 +133,7 @@ class VisualBibleResponse(APIContract):
     project_id: str
     version: int
     visual_bible: VisualBible
+    reference_assets: list[dict[str, Any]] = Field(default_factory=list)
     approval_status: str
     approved_at: datetime | None
     created_at: datetime
@@ -277,6 +278,7 @@ class SceneResponse(APIContract):
     motion: str | None
     caption_emphasis: list[str]
     sfx: list[str]
+    shot_spec: ShotSpec | None = None
     assets: list[AssetResponse] = Field(default_factory=list)
     selected_asset_id: str | None = None
     created_at: datetime
@@ -292,7 +294,7 @@ class AssetSelectionResponse(APIContract):
 class SceneAssetGenerateRequest(APIContract):
     run_key: str = Field(min_length=1, max_length=128)
     prompt: str | None = Field(default=None, min_length=1, max_length=2048)
-    reference_asset_ids: list[str] = Field(default_factory=list, max_length=10)
+    qa_correction: str | None = Field(default=None, min_length=1, max_length=2000)
 
 
 class StockSearchRequest(APIContract):
@@ -307,10 +309,11 @@ class SceneEditRequest(APIContract):
     duration_sec: float | None = Field(default=None, gt=0, le=60)
     visual_prompt: str | None = Field(default=None, min_length=1)
     asset_strategy: str | None = Field(default=None, min_length=1, max_length=64)
+    shot_spec: ShotSpec | None = None
 
     @model_validator(mode="after")
     def require_change(self) -> "SceneEditRequest":
-        if self.duration_sec is None and self.visual_prompt is None and self.asset_strategy is None:
+        if self.duration_sec is None and self.visual_prompt is None and self.asset_strategy is None and self.shot_spec is None:
             raise ValueError("at least one scene field must be provided")
         return self
 

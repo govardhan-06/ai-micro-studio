@@ -86,7 +86,8 @@ class GeminiTTSProvider(TTSProvider):
         status, headers, raw = self.request_fn(request, self.timeout)
         payload = self._payload_or_error(status, headers, raw)
         try:
-            encoded = payload["output_audio"]["data"]
+            audio_block = _find_audio_block(payload)
+            encoded = audio_block["data"]
             pcm = base64.b64decode(encoded, validate=True)
         except (KeyError, TypeError, binascii.Error) as exc:
             raise AudioProviderResponseError(
@@ -100,16 +101,21 @@ class GeminiTTSProvider(TTSProvider):
                 code="audio_invalid_response",
                 provider=self.name,
             )
-        sample_rate = 24000
+        sample_rate = _positive_int(audio_block.get("sample_rate"), default=24000)
         sample_width = 2
-        channels = 1
-        wav_data = _pcm_to_wav(pcm, channels=channels, sample_rate=sample_rate, sample_width=sample_width)
+        channels = _positive_int(audio_block.get("channels"), default=1)
+        wav_data, duration_sec, sample_rate, channels, sample_width = _audio_as_wav(
+            pcm,
+            channels=channels,
+            sample_rate=sample_rate,
+            sample_width=sample_width,
+        )
         return AudioArtifact(
             provider=self.name,
             model=self.model,
             content=wav_data,
             content_type="audio/wav",
-            duration_sec=len(pcm) / (sample_rate * channels * sample_width),
+            duration_sec=duration_sec,
             metadata={
                 "voice": voice or "Kore",
                 "direction": direction,
@@ -143,6 +149,56 @@ def _pcm_to_wav(pcm: bytes, *, channels: int, sample_rate: int, sample_width: in
         wav_file.setframerate(sample_rate)
         wav_file.writeframes(pcm)
     return output.getvalue()
+
+
+def _audio_as_wav(
+    audio: bytes,
+    *,
+    channels: int,
+    sample_rate: int,
+    sample_width: int,
+) -> tuple[bytes, float, int, int, int]:
+    if audio.startswith(b"RIFF") and audio[8:12] == b"WAVE":
+        try:
+            with wave.open(io.BytesIO(audio), "rb") as wav_file:
+                actual_channels = wav_file.getnchannels()
+                actual_sample_rate = wav_file.getframerate()
+                actual_sample_width = wav_file.getsampwidth()
+                duration_sec = wav_file.getnframes() / actual_sample_rate
+        except (EOFError, wave.Error) as exc:
+            raise AudioProviderResponseError(
+                "Gemini TTS returned an invalid WAV payload",
+                code="audio_invalid_response",
+                provider="gemini_tts",
+            ) from exc
+        return audio, duration_sec, actual_sample_rate, actual_channels, actual_sample_width
+
+    wav_data = _pcm_to_wav(audio, channels=channels, sample_rate=sample_rate, sample_width=sample_width)
+    return wav_data, len(audio) / (sample_rate * channels * sample_width), sample_rate, channels, sample_width
+
+
+def _find_audio_block(payload: Mapping[str, object]) -> Mapping[str, object]:
+    output_audio = payload.get("output_audio")
+    if isinstance(output_audio, Mapping):
+        return output_audio
+
+    steps = payload.get("steps")
+    if isinstance(steps, list):
+        for step in reversed(steps):
+            if not isinstance(step, Mapping):
+                continue
+            content = step.get("content")
+            if not isinstance(content, list):
+                continue
+            for block in reversed(content):
+                if isinstance(block, Mapping) and block.get("type") == "audio":
+                    return block
+
+    raise KeyError("audio output block")
+
+
+def _positive_int(value: object, *, default: int) -> int:
+    return value if isinstance(value, int) and value > 0 else default
 
 
 def _error_message(payload: dict, status: int) -> str:

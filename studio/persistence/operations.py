@@ -130,8 +130,9 @@ def select_asset(session: Session, *, scene_id: str, asset_id: str) -> AssetSele
         raise ValueError("scene and asset must exist before selecting an asset")
     if asset.scene_id != scene.id:
         raise ValueError("asset does not belong to scene")
-    if asset.status == "failed":
-        raise ValueError("failed assets cannot be selected")
+    qa_rejected = asset.status == "qa_rejected" or asset.metadata_json.get("qa", {}).get("passed") is False
+    if asset.status != "available" and not qa_rejected:
+        raise ValueError("only available or QA-rejected assets can be selected")
 
     selection = session.get(AssetSelection, scene_id)
     if selection is None:

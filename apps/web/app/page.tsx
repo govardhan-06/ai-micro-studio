@@ -84,9 +84,9 @@ type Story = {
 };
 
 type VisualBible = {
-  style: { description: string; palette: string[]; camera_language: string[] };
-  characters: { id: string; role: string; appearance: string; clothing: string; reference_asset_ids: string[] }[];
-  locations: { id: string; description: string; continuity_notes: string }[];
+  style: { lighting: string; lens_language: string; render_style: string; aspect_ratio: string; description?: string; palette: string[]; camera_language: string[] };
+  characters: { id: string; role: string; age: string; presentation: string; ethnicity: string; face: string; hair: string; build: string; clothing: string; accessories: string[]; immutable_traits: string[]; appearance?: string; reference_asset_ids: string[] }[];
+  locations: { id: string; name: string; architecture_geometry: string; time: string; weather: string; lighting: string; persistent_props: string[]; immutable_traits: string[]; description?: string; continuity_notes?: string; reference_asset_ids: string[] }[];
 };
 
 type VisualBibleVersion = {
@@ -94,6 +94,7 @@ type VisualBibleVersion = {
   project_id: string;
   version: number;
   visual_bible: VisualBible;
+  reference_assets: Asset[];
   approval_status: string;
   approved_at: string | null;
   created_at: string;
@@ -110,7 +111,7 @@ type Asset = {
   local_uri: string;
   content_url: string;
   prompt: string | null;
-  metadata: Record<string, unknown>;
+  metadata: Record<string, any>;
   status: string;
   created_at: string;
   updated_at: string;
@@ -129,10 +130,25 @@ type StoryboardScene = {
   motion: string | null;
   caption_emphasis: string[];
   sfx: string[];
+  shot_spec: ShotSpec | null;
   assets: Asset[];
   selected_asset_id: string | null;
   created_at: string;
   updated_at: string;
+};
+
+type ShotSpec = {
+  location_id: string;
+  character_ids: string[];
+  action: string;
+  expression: string;
+  composition: string;
+  camera: string;
+  temporary_props: string[];
+  lighting: string;
+  continuity_source: string[];
+  readable_text_metadata: { requested: boolean; text: string | null; surface: string | null; placement: string | null };
+  text_overlay: { text: string; x: number; y: number; font_size: number; color: string; start_sec: number; end_sec: number | null } | null;
 };
 
 type CaptionTrack = {
@@ -472,6 +488,16 @@ export default function HomePage() {
     setNotice("Visual Bible generation queued.");
   });
 
+  const generateVisualReferences = () => run("visual-references", async () => {
+    if (!workspace) return;
+    await api<{ job: Job }>(`/api/v1/projects/${workspace.project.id}/visual-bible/references:generate`, {
+      method: "POST",
+      body: JSON.stringify({ run_key: crypto.randomUUID() }),
+    });
+    setRefresh((value) => value + 1);
+    setNotice("Canonical character and location references queued.");
+  });
+
   const saveVisualBible = () => run("save-visual-bible", async () => {
     if (!workspace || !draftVisualBible) return;
     await api<VisualBibleVersion>(`/api/v1/projects/${workspace.project.id}/visual-bible`, {
@@ -689,6 +715,12 @@ export default function HomePage() {
     setDraftScenes((current) => current.map((scene, sceneIndex) => sceneIndex === index ? { ...scene, [field]: value } : scene));
   };
 
+  const updateShotSpec = (index: number, field: keyof ShotSpec, value: ShotSpec[keyof ShotSpec] | undefined) => {
+    setDraftScenes((current) => current.map((scene, sceneIndex) => sceneIndex === index && scene.shot_spec
+      ? { ...scene, shot_spec: { ...scene.shot_spec, [field]: value } as ShotSpec }
+      : scene));
+  };
+
   if (loading) return <main className="shell"><p className="status">Loading your studio…</p></main>;
 
   return (
@@ -749,19 +781,19 @@ export default function HomePage() {
               {!draftVisualBible ? <div className="empty inline"><h3>No visual direction yet.</h3><p>Approve a StorySpec, then derive a versioned Visual Bible from it.</p><button className="button primary" onClick={generateVisualBible} disabled={!approvedStory || busy === "visual-bible"}>{busy === "visual-bible" ? "Generating…" : "Generate Visual Bible"}</button></div> : <div className="visual-layout">
                 <div className="visual-editor">
                   <div className="version-line"><span>Version {draftVisualBible.version}</span><span>Derived from approved story</span></div>
-                  <label>Style description<textarea value={draftVisualBible.visual_bible.style.description} onChange={(event) => updateVisualStyle("description", event.target.value)} rows={3} /></label>
-                  <label>Palette <small>Comma-separated</small><input value={draftVisualBible.visual_bible.style.palette.join(", ")} onChange={(event) => updateVisualStyle("palette", event.target.value)} /></label>
-                  <label>Camera language <small>Comma-separated</small><input value={draftVisualBible.visual_bible.style.camera_language.join(", ")} onChange={(event) => updateVisualStyle("camera_language", event.target.value)} /></label>
-                  <div className="visual-list"><h3>Characters</h3>{draftVisualBible.visual_bible.characters.map((character, index) => <div className="visual-item" key={character.id}><strong>{character.id}</strong><label>Role<input value={character.role} onChange={(event) => updateVisualCharacter(index, "role", event.target.value)} /></label><label>Appearance<textarea value={character.appearance} onChange={(event) => updateVisualCharacter(index, "appearance", event.target.value)} rows={2} /></label><label>Clothing<textarea value={character.clothing} onChange={(event) => updateVisualCharacter(index, "clothing", event.target.value)} rows={2} /></label><label>Reference asset IDs <small>Comma-separated; media assets arrive in the next slice</small><input value={character.reference_asset_ids.join(", ")} onChange={(event) => updateVisualCharacter(index, "reference_asset_ids", event.target.value)} /></label></div>)}</div>
-                  <div className="visual-list"><h3>Locations</h3>{draftVisualBible.visual_bible.locations.map((location, index) => <div className="visual-item" key={location.id}><strong>{location.id}</strong><label>Description<textarea value={location.description} onChange={(event) => updateVisualLocation(index, "description", event.target.value)} rows={2} /></label><label>Continuity notes<textarea value={location.continuity_notes} onChange={(event) => updateVisualLocation(index, "continuity_notes", event.target.value)} rows={2} /></label></div>)}</div>
-                  <div className="action-row"><button className="button quiet" onClick={saveVisualBible} disabled={busy === "save-visual-bible"}>{busy === "save-visual-bible" ? "Saving…" : "Save Visual Bible draft"}</button>{draftVisualBible.approval_status === "draft" && <button className="button primary" onClick={approveVisualBible} disabled={busy === "approve-visual-bible"}>{busy === "approve-visual-bible" ? "Approving…" : "Approve visual direction"}</button>}</div>
+                  <label>Global lighting<textarea value={draftVisualBible.visual_bible.style.lighting} onChange={(event) => updateVisualStyle("lighting", event.target.value)} rows={2} /></label>
+                  <div className="two-fields"><label>Lens language<input value={draftVisualBible.visual_bible.style.lens_language} onChange={(event) => updateVisualStyle("lens_language", event.target.value)} /></label><label>Render style<input value={draftVisualBible.visual_bible.style.render_style} onChange={(event) => updateVisualStyle("render_style", event.target.value)} /></label></div>
+                  <div className="two-fields"><label>Aspect ratio<input value={draftVisualBible.visual_bible.style.aspect_ratio} onChange={(event) => updateVisualStyle("aspect_ratio", event.target.value)} /></label><label>Style description<textarea value={draftVisualBible.visual_bible.style.description ?? ""} onChange={(event) => updateVisualStyle("description", event.target.value)} rows={2} /></label></div>
+                  <div className="visual-list"><h3>Characters</h3>{draftVisualBible.visual_bible.characters.map((character, index) => <div className="visual-item" key={character.id}><strong>{character.id}</strong><label>Role<input value={character.role} onChange={(event) => updateVisualCharacter(index, "role", event.target.value)} /></label><div className="two-fields"><label>Age<input value={character.age} onChange={(event) => updateVisualCharacter(index, "age", event.target.value)} /></label><label>Presentation<input value={character.presentation} onChange={(event) => updateVisualCharacter(index, "presentation", event.target.value)} /></label></div><label>Face<textarea value={character.face} onChange={(event) => updateVisualCharacter(index, "face", event.target.value)} rows={2} /></label><label>Hair / build<input value={`${character.hair} / ${character.build}`} onChange={(event) => updateVisualCharacter(index, "hair", event.target.value)} /></label><label>Clothing<textarea value={character.clothing} onChange={(event) => updateVisualCharacter(index, "clothing", event.target.value)} rows={2} /></label><small>{character.reference_asset_ids.length ? `${character.reference_asset_ids.length} canonical reference(s)` : "Reference not generated"}</small></div>)}</div>
+                  <div className="visual-list"><h3>Locations</h3>{draftVisualBible.visual_bible.locations.map((location, index) => <div className="visual-item" key={location.id}><strong>{location.id} · {location.name}</strong><label>Architecture / geometry<textarea value={location.architecture_geometry} onChange={(event) => updateVisualLocation(index, "architecture_geometry", event.target.value)} rows={2} /></label><div className="two-fields"><label>Time<input value={location.time} onChange={(event) => updateVisualLocation(index, "time", event.target.value)} /></label><label>Weather<input value={location.weather} onChange={(event) => updateVisualLocation(index, "weather", event.target.value)} /></label></div><label>Lighting<input value={location.lighting} onChange={(event) => updateVisualLocation(index, "lighting", event.target.value)} /></label><small>{location.reference_asset_ids.length ? `${location.reference_asset_ids.length} canonical reference(s)` : "Reference not generated"}</small></div>)}</div>
+                  <div className="action-row"><button className="button quiet" onClick={saveVisualBible} disabled={busy === "save-visual-bible"}>{busy === "save-visual-bible" ? "Saving…" : "Save Visual Bible draft"}</button>{draftVisualBible.approval_status === "draft" && <button className="button primary" onClick={approveVisualBible} disabled={busy === "approve-visual-bible"}>{busy === "approve-visual-bible" ? "Approving…" : "Approve visual direction"}</button>}{draftVisualBible.approval_status === "approved" && <button className="button quiet" onClick={generateVisualReferences} disabled={busy === "visual-references"}>{busy === "visual-references" ? "Generating references…" : "Generate canonical references"}</button>}</div>{draftVisualBible.reference_assets.length > 0 && <div className="asset-grid">{draftVisualBible.reference_assets.map((asset) => <article className="asset-card" key={asset.id}><img src={`${API_BASE}${asset.content_url}`} alt={asset.asset_type} /><small>{asset.asset_type} · {asset.metadata.reference_key ? String(asset.metadata.reference_key) : "reference"}</small></article>)}</div>}
                 </div>
               </div>}
             </section>
 
             <section className="panel storyboard-panel">
-              <div className="panel-heading"><div><p className="eyebrow">04 · Storyboard</p><h2>Shape every scene before media</h2></div><button className="button primary" onClick={generateStoryboard} disabled={!draftVisualBible || draftVisualBible.approval_status !== "approved" || busy === "storyboard"}>{busy === "storyboard" ? "Generating…" : "Generate storyboard"}</button></div>
-              {draftScenes.length === 0 ? <div className="empty inline"><h3>No storyboard scenes yet.</h3><p>Approve the Visual Bible, then derive editable scenes from the approved StorySpec.</p></div> : <div className="storyboard-list">{draftScenes.map((scene, index) => <div className="storyboard-item" key={scene.id}><div className="scene-heading"><span>Scene {scene.order}</span><span>{scene.motion ?? "restrained motion"}</span></div><p className="scene-intent">{scene.visual_intent}</p><label>Visual prompt<textarea value={scene.visual_prompt ?? ""} onChange={(event) => updateStoryboardScene(index, "visual_prompt", event.target.value)} rows={3} /></label><div className="two-fields"><label>Duration (seconds)<input type="number" min={0.1} max={60} value={scene.duration_sec} onChange={(event) => updateStoryboardScene(index, "duration_sec", Number(event.target.value))} /></label><label>Asset strategy<select value={scene.asset_strategy} onChange={(event) => updateStoryboardScene(index, "asset_strategy", event.target.value)}><option value="generated_image">Generated image</option><option value="stock_photo">Stock photo</option><option value="stock_video">Stock video</option></select></label></div><div className="asset-controls"><div className="action-row"><button className="button quiet" onClick={() => saveScene(scene)} disabled={busy === `scene-${scene.id}`}>{busy === `scene-${scene.id}` ? "Saving…" : "Save scene"}</button><button className="button primary" onClick={() => generateSceneAsset(scene)} disabled={busy === `asset-${scene.id}`}>{busy === `asset-${scene.id}` ? "Generating…" : "Generate another image"}</button><select aria-label={`Stock media type for scene ${scene.order}`} value={stockType} onChange={(event) => setStockType(event.target.value as "photo" | "video")}><option value="photo">Stock photo</option><option value="video">Stock video</option></select><button className="button quiet" onClick={() => searchStock(scene)} disabled={busy === `stock-${scene.id}`}>{busy === `stock-${scene.id}` ? "Searching…" : "Search stock again"}</button></div><div className="asset-grid">{scene.assets.length === 0 ? <p className="asset-empty">No candidates yet. Generate imagery or search Pexels for this scene.</p> : scene.assets.map((asset) => <article className={asset.id === scene.selected_asset_id ? "asset-card selected" : "asset-card"} key={asset.id}>{asset.asset_type === "stock_video" ? <video controls preload="metadata" src={`${API_BASE}${asset.content_url}`} /> : <img src={`${API_BASE}${asset.content_url}`} alt={String(asset.metadata.alt ?? asset.prompt ?? `Scene ${scene.order} candidate`)} /> }<small>{asset.provider ?? "unknown"} · {asset.asset_type}{asset.metadata.photographer ? ` · ${String(asset.metadata.photographer)}` : ""}</small><button className={asset.id === scene.selected_asset_id ? "button selected-button" : "button quiet"} onClick={() => selectAsset(scene, asset.id)} disabled={busy === `select-asset-${scene.id}`}>{asset.id === scene.selected_asset_id ? "Selected" : "Select asset"}</button></article>)}</div></div></div>)}</div>}
+              <div className="panel-heading"><div><p className="eyebrow">04 · Storyboard</p><h2>Shape every scene before media</h2></div><button className="button primary" onClick={generateStoryboard} disabled={!draftVisualBible || draftVisualBible.approval_status !== "approved" || draftVisualBible.reference_assets.length === 0 || busy === "storyboard"}>{busy === "storyboard" ? "Generating…" : "Generate storyboard"}</button></div>
+              {draftScenes.length === 0 ? <div className="empty inline"><h3>No storyboard scenes yet.</h3><p>Approve the Visual Bible and generate canonical references before deriving scenes.</p></div> : <div className="storyboard-list">{draftScenes.map((scene, index) => <div className="storyboard-item" key={scene.id}><div className="scene-heading"><span>Scene {scene.order}</span><span>{scene.motion ?? "restrained motion"}</span></div><p className="scene-intent">{scene.visual_intent}</p>{scene.shot_spec && <><div className="two-fields"><label>Action<textarea value={scene.shot_spec.action} onChange={(event) => updateShotSpec(index, "action", event.target.value)} rows={2} /></label><label>Composition<textarea value={scene.shot_spec.composition} onChange={(event) => updateShotSpec(index, "composition", event.target.value)} rows={2} /></label></div><label>Camera<input value={scene.shot_spec.camera} onChange={(event) => updateShotSpec(index, "camera", event.target.value)} /></label>{scene.shot_spec.text_overlay && <div className="two-fields"><label>Overlay text<input value={scene.shot_spec.text_overlay.text} onChange={(event) => setDraftScenes((current) => current.map((item, itemIndex) => itemIndex === index && item.shot_spec?.text_overlay ? { ...item, shot_spec: { ...item.shot_spec, text_overlay: { ...item.shot_spec.text_overlay, text: event.target.value } } } : item))} /></label><label>Overlay position<input value={`${scene.shot_spec.text_overlay.x}, ${scene.shot_spec.text_overlay.y}`} onChange={(event) => updateShotSpec(index, "text_overlay", scene.shot_spec?.text_overlay)} /></label></div>}</> }<label>Visual prompt<textarea value={scene.visual_prompt ?? ""} onChange={(event) => updateStoryboardScene(index, "visual_prompt", event.target.value)} rows={3} /></label><div className="two-fields"><label>Duration (seconds)<input type="number" min={0.1} max={60} value={scene.duration_sec} onChange={(event) => updateStoryboardScene(index, "duration_sec", Number(event.target.value))} /></label><label>Asset strategy<select value={scene.asset_strategy} onChange={(event) => updateStoryboardScene(index, "asset_strategy", event.target.value)}><option value="generated_image">Generated image</option><option value="stock_photo">Stock photo</option><option value="stock_video">Stock video</option></select></label></div><div className="asset-controls"><div className="action-row"><button className="button quiet" onClick={() => saveScene(scene)} disabled={busy === `scene-${scene.id}`}>{busy === `scene-${scene.id}` ? "Saving…" : "Save scene"}</button><button className="button primary" onClick={() => generateSceneAsset(scene)} disabled={busy === `asset-${scene.id}`}>{busy === `asset-${scene.id}` ? "Generating…" : "Generate another image"}</button><select aria-label={`Stock media type for scene ${scene.order}`} value={stockType} onChange={(event) => setStockType(event.target.value as "photo" | "video")}><option value="photo">Stock photo</option><option value="video">Stock video</option></select><button className="button quiet" onClick={() => searchStock(scene)} disabled={busy === `stock-${scene.id}`}>{busy === `stock-${scene.id}` ? "Searching…" : "Search stock again"}</button></div><div className="asset-grid">{scene.assets.length === 0 ? <p className="asset-empty">No candidates yet. Generate imagery or search Pexels for this scene.</p> : scene.assets.map((asset) => <article className={asset.id === scene.selected_asset_id ? "asset-card selected" : "asset-card"} key={asset.id}>{asset.asset_type === "stock_video" ? <video controls preload="metadata" src={`${API_BASE}${asset.content_url}`} /> : <img src={`${API_BASE}${asset.content_url}`} alt={String(asset.metadata.alt ?? asset.prompt ?? `Scene ${scene.order} candidate`)} /> }<small>{asset.provider ?? "unknown"} · {asset.asset_type}{asset.metadata.photographer ? ` · ${String(asset.metadata.photographer)}` : ""}</small>{asset.metadata.qa && <small className="issues">{String((asset.metadata.qa as { passed?: boolean }).passed === false ? "QA rejected" : "QA passed")}</small>}<button className={asset.id === scene.selected_asset_id ? "button selected-button" : "button quiet"} onClick={() => selectAsset(scene, asset.id)} disabled={busy === `select-asset-${scene.id}` || (asset.status !== "available" && asset.status !== "qa_rejected" && (asset.metadata.qa as { passed?: boolean } | undefined)?.passed !== false)}>{asset.id === scene.selected_asset_id ? (asset.status === "qa_rejected" || (asset.metadata.qa as { passed?: boolean } | undefined)?.passed === false) ? "Selected despite QA" : "Selected" : (asset.status === "qa_rejected" || (asset.metadata.qa as { passed?: boolean } | undefined)?.passed === false) ? "Select despite QA" : "Select asset"}</button></article>)}</div></div></div>)}</div>}
             </section>
 
             <section className="panel audio-panel">

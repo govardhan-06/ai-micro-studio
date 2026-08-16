@@ -11,6 +11,7 @@ from studio.agents.creative_director.contracts import (
     StoryCritiqueOutput,
     StoryDraftOutput,
 )
+from studio.domain.schemas.contracts import ShotSpec, StorySpec, VisualBible
 from studio.agents.creative_director.graph import build_creative_graph
 from studio.providers.llm.groq import GroqProvider
 from studio.providers.llm.nvidia_nim import NvidiaNIMProvider
@@ -108,6 +109,68 @@ class CreativeDirector:
         if not isinstance(draft, StoryDraftOutput) or not isinstance(critique, StoryCritiqueOutput):
             raise TypeError("story graph returned invalid typed outputs")
         return draft, critique
+
+    def generate_visual_bible(
+        self,
+        story: StorySpec,
+        *,
+        trace_metadata: dict[str, Any] | None = None,
+    ) -> VisualBible:
+        run_id = str(uuid4())
+        trace_metadata = _trace_metadata(
+            trace_metadata,
+            run_id=run_id,
+            mode="visual_bible_generation",
+            job_type="visual_bible_generation",
+        )
+        state = self._invoke_graph(
+            {
+                "mode": "visual_bible_generation",
+                "brief": story.working_title,
+                "story_spec": story,
+                "run_id": run_id,
+                "trace_metadata": trace_metadata,
+            },
+            mode="visual_bible_generation",
+            trace_metadata=trace_metadata,
+        )
+        result = state.get("result")
+        if not isinstance(result, VisualBible):
+            raise TypeError("visual bible graph returned an invalid result")
+        return result
+
+    def generate_shot_specs(
+        self,
+        story: StorySpec,
+        visual_bible: VisualBible,
+        *,
+        trace_metadata: dict[str, Any] | None = None,
+    ) -> list[ShotSpec]:
+        run_id = str(uuid4())
+        trace_metadata = _trace_metadata(
+            trace_metadata,
+            run_id=run_id,
+            mode="shot_spec_generation",
+            job_type="shot_spec_generation",
+        )
+        state = self._invoke_graph(
+            {
+                "mode": "shot_spec_generation",
+                "brief": story.working_title,
+                "story_spec": story,
+                "visual_bible": visual_bible,
+                "run_id": run_id,
+                "trace_metadata": trace_metadata,
+            },
+            mode="shot_spec_generation",
+            trace_metadata=trace_metadata,
+        )
+        result = state.get("result")
+        if not isinstance(result, list) or not all(isinstance(item, ShotSpec) for item in result):
+            raise TypeError("shot spec graph returned an invalid result")
+        if len(result) != len(story.scenes):
+            raise ValueError("shot spec graph must return one ShotSpec per scene")
+        return result
 
     def _invoke_graph(
         self,
