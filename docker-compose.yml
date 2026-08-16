@@ -1,0 +1,157 @@
+name: ai-micro-story-studio
+
+x-app-environment: &app-environment
+  APP_MODE: ${APP_MODE:-validation}
+  LLM_PRIMARY: ${LLM_PRIMARY:-nvidia_nim}
+  LLM_FALLBACK: ${LLM_FALLBACK:-groq}
+  NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+  NIM_BASE_URL: ${NIM_BASE_URL:-https://integrate.api.nvidia.com/v1}
+  NIM_MODEL: ${NIM_MODEL:-}
+  GROQ_API_KEY: ${GROQ_API_KEY:-}
+  GROQ_BASE_URL: ${GROQ_BASE_URL:-https://api.groq.com/openai/v1}
+  GROQ_MODEL: ${GROQ_MODEL:-}
+  LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+  LANGSMITH_ENDPOINT: ${LANGSMITH_ENDPOINT:-https://api.smith.langchain.com}
+  LANGSMITH_API_KEY: ${LANGSMITH_API_KEY:-}
+  LANGSMITH_PROJECT: ${LANGSMITH_PROJECT:-}
+  CLOUDFLARE_API_KEY: ${CLOUDFLARE_API_KEY:-}
+  CLOUDFLARE_ACCOUNT_ID: ${CLOUDFLARE_ACCOUNT_ID:-}
+  CLOUDFLARE_BASE_URL: ${CLOUDFLARE_BASE_URL:-https://api.cloudflare.com/client/v4}
+  PEXELS_API_KEY: ${PEXELS_API_KEY:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  GEMINI_PROJECT_ID: ${GEMINI_PROJECT_ID:-}
+  IMAGE_PRIMARY: ${IMAGE_PRIMARY:-cloudflare_flux_schnell}
+  STOCK_PRIMARY: ${STOCK_PRIMARY:-pexels}
+  TTS_PRIMARY: ${TTS_PRIMARY:-gemini_tts}
+  TRANSCRIPTION_PRIMARY: ${TRANSCRIPTION_PRIMARY:-groq_whisper}
+  VIDEO_GENERATION_ENABLED: ${VIDEO_GENERATION_ENABLED:-false}
+  ARTIFACT_STORAGE: ${ARTIFACT_STORAGE:-local}
+  ARTIFACT_ROOT: ${ARTIFACT_ROOT:-/var/lib/ai-micro-story-studio/artifacts}
+  DATABASE_URL: ${DATABASE_URL:-postgresql://studio:studio@postgres:5432/studio}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  PUBLISHING_MODE: ${PUBLISHING_MODE:-manual}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-studio}
+      POSTGRES_USER: ${POSTGRES_USER:-studio}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-studio}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: services/api/Dockerfile
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    environment: *app-environment
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - artifact-data:/var/lib/ai-micro-story-studio/artifacts
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    develop:
+      watch:
+        - action: sync
+          path: ./services/api/app
+          target: /app/app
+          ignore:
+            - __pycache__/
+        - action: sync
+          path: ./studio
+          target: /app/studio
+          ignore:
+            - __pycache__/
+        - action: rebuild
+          path: ./services/api/requirements.txt
+        - action: rebuild
+          path: ./services/api/Dockerfile
+
+  worker:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    environment: *app-environment
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - artifact-data:/var/lib/ai-micro-story-studio/artifacts
+    develop:
+      watch:
+        - action: rebuild
+          path: ./services/worker/app
+        - action: rebuild
+          path: ./studio
+        - action: rebuild
+          path: ./services/api/requirements.txt
+        - action: rebuild
+          path: ./services/worker/Dockerfile
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    develop:
+      watch:
+        - action: sync
+          path: ./apps/web/app
+          target: /app/app
+          ignore:
+            - .next/
+        - action: rebuild
+          path: ./apps/web/package.json
+        - action: rebuild
+          path: ./apps/web/Dockerfile
+    ports:
+      - "3000:3000"
+
+  renderer:
+    build:
+      context: .
+      dockerfile: packages/renderer/Dockerfile
+    develop:
+      watch:
+        - action: sync
+          path: ./packages/renderer/src
+          target: /app/src
+        - action: rebuild
+          path: ./packages/renderer/package.json
+        - action: rebuild
+          path: ./packages/renderer/Dockerfile
+    ports:
+      - "3001:3001"
+
+volumes:
+  postgres-data:
+  artifact-data:

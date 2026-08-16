@@ -1,0 +1,19 @@
+{
+  "name": "ai-micro-story-studio-renderer",
+  "private": true,
+  "scripts": {
+    "dev": "remotion studio src/index.tsx --host=0.0.0.0",
+    "render": "remotion render src/index.tsx StoryVideo out/render.mp4"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.229",
+    "react": "19.1.1",
+    "react-dom": "19.1.1",
+    "remotion": "4.0.229"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.2",
+    "@types/react-dom": "19.1.2",
+    "typescript": "5.8.3"
+  }
+}
